@@ -1,6 +1,8 @@
 import Foundation
 
 final class QuotaSnapshotService {
+    private static let logMergeTolerance: TimeInterval = 15 * 60
+
     private let sessionDirectory: URL
     private let appServerProvider: CodexAppServerQuotaProvider
     private let decoderFormatter: ISO8601DateFormatter
@@ -24,9 +26,10 @@ final class QuotaSnapshotService {
 
     func latestSnapshot(forceReload: Bool = false) -> QuotaSnapshot? {
         if let snapshot = appServerProvider.latestSnapshot() {
-            lastValidSnapshot = snapshot
-            lastValidReferenceDate = snapshotDate(snapshot)
-            return snapshot
+            let mergedSnapshot = mergeMissingWindowsFromRecentLog(into: snapshot, forceReload: forceReload)
+            lastValidSnapshot = mergedSnapshot
+            lastValidReferenceDate = snapshotDate(mergedSnapshot)
+            return mergedSnapshot
         }
 
         if let candidate = latestLogSnapshot(forceReload: forceReload) {
@@ -41,6 +44,58 @@ final class QuotaSnapshotService {
         }
 
         return lastValidSnapshot
+    }
+
+    private func mergeMissingWindowsFromRecentLog(into appServerSnapshot: QuotaSnapshot, forceReload: Bool) -> QuotaSnapshot {
+        let appWindows = windowsByLabel(appServerSnapshot)
+        guard appWindows["5h"] == nil || appWindows["7d"] == nil else {
+            return appServerSnapshot
+        }
+
+        guard let candidate = latestLogSnapshot(forceReload: forceReload) else {
+            return appServerSnapshot
+        }
+
+        let appReferenceDate = snapshotDate(appServerSnapshot)
+        guard candidate.referenceDate >= appReferenceDate.addingTimeInterval(-Self.logMergeTolerance) else {
+            return appServerSnapshot
+        }
+
+        let logWindows = windowsByLabel(candidate.snapshot)
+        var mergedWindows = appWindows
+        for label in ["5h", "7d"] where mergedWindows[label] == nil {
+            if let window = logWindows[label] {
+                mergedWindows[label] = window
+            }
+        }
+
+        guard mergedWindows.count > appWindows.count else {
+            return appServerSnapshot
+        }
+
+        let primary = mergedWindows["5h"] ?? appServerSnapshot.primary
+        let secondary = mergedWindows["7d"].flatMap { $0.label == primary.label ? nil : $0 }
+            ?? appServerSnapshot.secondary.flatMap { $0.label == primary.label ? nil : $0 }
+
+        return QuotaSnapshot(
+            sourceFileName: "\(appServerSnapshot.sourceFileName) + \(candidate.snapshot.sourceFileName)",
+            eventTimestamp: appServerSnapshot.eventTimestamp,
+            detectedAt: appServerSnapshot.detectedAt,
+            planType: appServerSnapshot.planType ?? candidate.snapshot.planType,
+            primary: primary,
+            secondary: secondary
+        )
+    }
+
+    private func windowsByLabel(_ snapshot: QuotaSnapshot) -> [String: WindowQuota] {
+        var windows: [String: WindowQuota] = [:]
+        for window in [snapshot.primary, snapshot.secondary].compactMap({ $0 }) {
+            if let resetsAt = window.resetsAt, resetsAt <= Date() {
+                continue
+            }
+            windows[window.label] = window
+        }
+        return windows
     }
 
     func stop() {
