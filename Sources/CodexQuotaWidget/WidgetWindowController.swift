@@ -45,15 +45,12 @@ final class WidgetWindowController: NSObject, NSWindowDelegate {
 
     func toggleExpanded() {
         isExpanded.toggle()
-        applySize()
+        applySize(animated: true)
     }
 
     func update(snapshot: QuotaSnapshot?) {
-        let sizeBeforeRender = currentSize
         contentView.render(snapshot: snapshot)
-        if !isExpanded && abs(sizeBeforeRender.width - currentSize.width) > 0.5 {
-            applySize()
-        }
+        syncWindowSize(animated: false)
     }
 
     func windowDidMove(_ notification: Notification) {
@@ -77,7 +74,6 @@ final class WidgetWindowController: NSObject, NSWindowDelegate {
     }
 
     private func setupContent() {
-        contentView.translatesAutoresizingMaskIntoConstraints = false
         contentView.onToggleExpanded = { [weak self] in
             self?.toggleExpanded()
         }
@@ -98,14 +94,7 @@ final class WidgetWindowController: NSObject, NSWindowDelegate {
         }
         window.contentView = contentView
 
-        NSLayoutConstraint.activate([
-            contentView.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor),
-            contentView.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor),
-            contentView.topAnchor.constraint(equalTo: window.contentView!.topAnchor),
-            contentView.bottomAnchor.constraint(equalTo: window.contentView!.bottomAnchor),
-        ])
-
-        applySize()
+        applySize(animated: false)
     }
 
     private func restoreInitialPlacement() {
@@ -120,12 +109,19 @@ final class WidgetWindowController: NSObject, NSWindowDelegate {
     }
 
     private var currentSize: NSSize {
-        isExpanded
-            ? NSSize(width: WidgetLayout.expandedWidth, height: WidgetLayout.expandedHeight)
-            : NSSize(width: contentView.preferredCollapsedWidth, height: WidgetLayout.collapsedHeight)
+        contentView.preferredSize(expanded: isExpanded)
     }
 
-    private func applySize() {
+    private func syncWindowSize(animated: Bool) {
+        let target = currentSize
+        let frame = window.frame
+        guard abs(target.width - frame.width) > 0.5 || abs(target.height - frame.height) > 0.5 else {
+            return
+        }
+        applySize(animated: animated)
+    }
+
+    private func applySize(animated: Bool = true) {
         contentView.setExpanded(isExpanded)
         let newSize = currentSize
         var frame = window.frame
@@ -133,7 +129,7 @@ final class WidgetWindowController: NSObject, NSWindowDelegate {
         frame.origin.y -= deltaHeight
         frame.size = newSize
         frame.origin = clampedOrigin(for: frame.origin, size: frame.size)
-        window.setFrame(frame, display: true, animate: true)
+        window.setFrame(frame, display: true, animate: animated)
     }
 
     private func defaultFrame(for size: NSSize) -> NSRect {
@@ -165,11 +161,12 @@ final class WidgetWindowController: NSObject, NSWindowDelegate {
 }
 
 private enum WidgetLayout {
-    static let singleQuotaWidth: CGFloat = 92
-    static let dualQuotaWidth: CGFloat = 154
-    static let expandedWidth: CGFloat = 228
+    static let minCollapsedWidth: CGFloat = 92
+    static let maxExpandedContentWidth: CGFloat = 260
     static let collapsedHeight: CGFloat = 32
-    static let expandedHeight: CGFloat = 118
+    static let horizontalPadding: CGFloat = 10
+    static let verticalPadding: CGFloat = 6
+    static let sectionSpacing: CGFloat = 7
 }
 
 private final class WidgetContentView: NSView {
@@ -191,7 +188,7 @@ private final class WidgetContentView: NSView {
     private let resetLabel = NSTextField(labelWithString: "重置: --")
     private let freshnessLabel = NSTextField(labelWithString: "最新日志: --")
     private let planLabel = NSTextField(labelWithString: "套餐: --")
-    private(set) var preferredCollapsedWidth = WidgetLayout.singleQuotaWidth
+    private let container = NSStackView()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -223,9 +220,6 @@ private final class WidgetContentView: NSView {
             let sevenDay = windows.sevenDay
             primarySummaryView.isHidden = fiveHour == nil
             secondarySummaryView.isHidden = sevenDay == nil
-            preferredCollapsedWidth = (fiveHour != nil && sevenDay != nil)
-                ? WidgetLayout.dualQuotaWidth
-                : WidgetLayout.singleQuotaWidth
 
             primarySummaryView.render(
                 label: "5h",
@@ -264,10 +258,11 @@ private final class WidgetContentView: NSView {
                 sevenDay.map { "7d \(WidgetFormatter.timeUntilReset($0.resetsAt))" },
             ].compactMap { $0 }
             resetLabel.stringValue = "重置: \(resetParts.isEmpty ? "--" : resetParts.joined(separator: " · "))"
-            freshnessLabel.stringValue = "数据来源: \(snapshot.sourceFileName) · \(WidgetFormatter.relativeAge(snapshot.eventTimestamp))"
+            let age = WidgetFormatter.relativeAge(snapshot.eventTimestamp)
+            freshnessLabel.stringValue = "数据来源: \(WidgetFormatter.compactSourceName(snapshot.sourceFileName)) · \(age)"
+            freshnessLabel.toolTip = "数据来源: \(snapshot.sourceFileName) · \(age)"
             planLabel.stringValue = "套餐: \(snapshot.planType ?? "unknown")"
         } else {
-            preferredCollapsedWidth = WidgetLayout.singleQuotaWidth
             primarySummaryView.isHidden = true
             secondarySummaryView.isHidden = false
             primarySummaryView.render(label: "5h", remainingPercent: nil, color: WidgetColors.mutedColor)
@@ -278,6 +273,7 @@ private final class WidgetContentView: NSView {
             sevenDayLabel.stringValue = "7d: 等 Codex 写入额度数据"
             resetLabel.stringValue = "重置: --"
             freshnessLabel.stringValue = "数据来源: 暂无"
+            freshnessLabel.toolTip = nil
             planLabel.stringValue = "套餐: --"
         }
     }
@@ -286,11 +282,35 @@ private final class WidgetContentView: NSView {
         detailStack.isHidden = !expanded
     }
 
+    /// 按当前可见内容测量胶囊尺寸：收起态只算额度摘要，展开态取摘要与详情中的较宽者并限制最大宽度。
+    func preferredSize(expanded: Bool) -> NSSize {
+        let lanes = [primarySummaryView, secondarySummaryView].filter { !$0.isHidden }
+        let laneWidth = lanes.map(\.intrinsicContentSize.width).max() ?? 0
+        let laneHeight = lanes.map(\.intrinsicContentSize.height).max() ?? 0
+        let summaryWidth = lanes.isEmpty
+            ? 0
+            : laneWidth * CGFloat(lanes.count) + summaryStack.spacing * CGFloat(lanes.count - 1)
+        let collapsedWidth = max(WidgetLayout.minCollapsedWidth, ceil(summaryWidth) + WidgetLayout.horizontalPadding * 2)
+        guard expanded else {
+            return NSSize(width: collapsedWidth, height: WidgetLayout.collapsedHeight)
+        }
+
+        let rows = [fiveHourLabel, sevenDayLabel, resetLabel, freshnessLabel, planLabel].filter { !$0.isHidden }
+        let detailWidth = rows.map { $0.fittingSize.width }.max() ?? 0
+        let detailHeight = rows.reduce(0) { $0 + $1.fittingSize.height }
+            + detailStack.spacing * CGFloat(max(0, rows.count - 1))
+        let contentWidth = min(max(summaryWidth, detailWidth), WidgetLayout.maxExpandedContentWidth)
+        let contentHeight = laneHeight + WidgetLayout.sectionSpacing + detailHeight
+        return NSSize(
+            width: max(collapsedWidth, ceil(contentWidth) + WidgetLayout.horizontalPadding * 2),
+            height: ceil(contentHeight) + WidgetLayout.verticalPadding * 2
+        )
+    }
+
     private func setupViews() {
-        let container = NSStackView()
         container.orientation = .vertical
         container.alignment = .centerX
-        container.spacing = 7
+        container.spacing = WidgetLayout.sectionSpacing
         container.translatesAutoresizingMaskIntoConstraints = false
 
         summaryStack.orientation = .horizontal
@@ -302,10 +322,6 @@ private final class WidgetContentView: NSView {
         summaryStack.addArrangedSubview(secondarySummaryView)
         primarySummaryView.translatesAutoresizingMaskIntoConstraints = false
         secondarySummaryView.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            primarySummaryView.widthAnchor.constraint(equalToConstant: 60),
-            secondarySummaryView.widthAnchor.constraint(equalToConstant: 60),
-        ])
 
         [fiveHourLabel, sevenDayLabel, resetLabel, freshnessLabel, planLabel].forEach { label in
             label.font = .systemFont(ofSize: 11, weight: .regular)
@@ -316,7 +332,6 @@ private final class WidgetContentView: NSView {
         detailStack.orientation = .vertical
         detailStack.alignment = .leading
         detailStack.spacing = 4
-        detailStack.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 2)
         detailStack.isHidden = true
 
         container.addArrangedSubview(summaryStack)
@@ -324,10 +339,10 @@ private final class WidgetContentView: NSView {
         addSubview(container)
 
         NSLayoutConstraint.activate([
-            container.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            container.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            container.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            container.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+            container.leadingAnchor.constraint(equalTo: leadingAnchor, constant: WidgetLayout.horizontalPadding),
+            container.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -WidgetLayout.horizontalPadding),
+            container.topAnchor.constraint(equalTo: topAnchor, constant: WidgetLayout.verticalPadding),
+            container.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -WidgetLayout.verticalPadding),
         ])
     }
 
@@ -475,6 +490,11 @@ enum WidgetColors {
 private final class SummaryQuotaView: NSView {
     private let colorDot = DotView()
     private let valueLabel = NSTextField(labelWithString: "--")
+    private let contentStack = NSStackView()
+
+    override var intrinsicContentSize: NSSize {
+        contentStack.fittingSize
+    }
 
     init(title: String) {
         super.init(frame: .zero)
@@ -497,14 +517,14 @@ private final class SummaryQuotaView: NSView {
             percentText = " --%"
         }
         valueLabel.stringValue = "\(label) \(percentText)"
+        invalidateIntrinsicContentSize()
     }
 
     private func setupViews() {
-        let stack = NSStackView()
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 5
-        stack.translatesAutoresizingMaskIntoConstraints = false
+        contentStack.orientation = .horizontal
+        contentStack.alignment = .centerY
+        contentStack.spacing = 5
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
 
         valueLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
         valueLabel.textColor = .white
@@ -512,17 +532,17 @@ private final class SummaryQuotaView: NSView {
         valueLabel.lineBreakMode = .byClipping
         valueLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        stack.addArrangedSubview(colorDot)
-        stack.addArrangedSubview(valueLabel)
-        addSubview(stack)
+        contentStack.addArrangedSubview(colorDot)
+        contentStack.addArrangedSubview(valueLabel)
+        addSubview(contentStack)
 
         NSLayoutConstraint.activate([
             colorDot.widthAnchor.constraint(equalToConstant: 6),
             colorDot.heightAnchor.constraint(equalToConstant: 6),
-            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            contentStack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            contentStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            contentStack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor),
+            contentStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
         ])
     }
 }
@@ -572,5 +592,16 @@ private enum WidgetFormatter {
             return "\(hours)h 前"
         }
         return "\(hours / 24)d 前"
+    }
+
+    /// 日志文件名形如 rollout-2026-10-21T19-40-18-<uuid>.jsonl，压缩成 "日志 10-21 19:40" 避免详情行被截断。
+    static func compactSourceName(_ name: String) -> String {
+        guard name.hasSuffix(".jsonl") else { return name }
+        let parts = name.split(separator: "-")
+        guard parts.count >= 6, parts[0] == "rollout" else { return name }
+        guard let separatorIndex = parts[3].firstIndex(of: "T") else { return name }
+        let date = "\(parts[2])-\(parts[3][..<separatorIndex])"
+        let hour = parts[3][parts[3].index(after: separatorIndex)...]
+        return "日志 \(date) \(hour):\(parts[4])"
     }
 }
