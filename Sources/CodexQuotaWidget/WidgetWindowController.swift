@@ -341,8 +341,9 @@ private final class WidgetContentView: NSView {
         NSLayoutConstraint.activate([
             container.leadingAnchor.constraint(equalTo: leadingAnchor, constant: WidgetLayout.horizontalPadding),
             container.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -WidgetLayout.horizontalPadding),
-            container.topAnchor.constraint(equalTo: topAnchor, constant: WidgetLayout.verticalPadding),
-            container.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -WidgetLayout.verticalPadding),
+            container.centerYAnchor.constraint(equalTo: centerYAnchor),
+            container.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: WidgetLayout.verticalPadding),
+            container.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -WidgetLayout.verticalPadding),
         ])
     }
 
