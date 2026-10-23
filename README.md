@@ -61,6 +61,66 @@ Codex 的剩余额度通常藏得比较深，需要点进本地模式里的额�
 - 右键胶囊可以快速打开键盘设置，方便把 Touch Bar 切到 `App 控制`。
 - 支持登录后后台自启，打开 Codex 后自动出现。
 
+## Release Package
+
+Build a drag-to-Applications bundle:
+
+```bash
+./scripts/package_release.sh
+# optional: override the marketing version
+VERSION=1.1.0 ./scripts/package_release.sh
+```
+
+Outputs in `dist/`:
+
+- `Codex Quota Widget.app` — run it directly, or drag it into `/Applications`.
+- `CodexQuotaWidget-<version>.dmg` — mount it and drag the app onto the Applications shortcut.
+- `CodexQuotaWidget-<version>.zip` — the same bundle for manual distribution.
+
+The bundle is ad-hoc signed and declares `LSUIElement`, so it runs as an accessory app without a Dock icon. It is not notarized: a copy downloaded from the internet needs the quarantine flag removed once with `xattr -dr com.apple.quarantine "/Applications/Codex Quota Widget.app"`.
+
+Only one floating widget runs at a time; the app and the LaunchAgent share `~/.codex-quota-widget/instance.lock`. If you move from the LaunchAgent helper to the app, remove the agent first:
+
+```bash
+./scripts/uninstall_launch_agent.sh
+```
+
+To regenerate the app icon after changing `scripts/AppIconGenerator.swift`:
+
+```bash
+./scripts/generate_app_icon.sh
+```
+
+## 发布安装包
+
+打包成可以直接放进「应用程序」的 release 包：
+
+```bash
+./scripts/package_release.sh
+# 需要改版本号时
+VERSION=1.1.0 ./scripts/package_release.sh
+```
+
+`dist/` 下会生成：
+
+- `Codex Quota Widget.app`：可直接运行，或拖入 `/Applications`。
+- `CodexQuotaWidget-<version>.dmg`：挂载后把应用拖到 Applications 快捷方式即可安装。
+- `CodexQuotaWidget-<version>.zip`：同一个应用包，方便手动分发。
+
+应用使用 ad-hoc 签名并声明 `LSUIElement`，运行时不占 Dock 图标。由于没有做公证，从网络下载的包首次打开前需要执行一次 `xattr -dr com.apple.quarantine "/Applications/Codex Quota Widget.app"`。
+
+应用版与 LaunchAgent 版共用 `~/.codex-quota-widget/instance.lock`，同一时间只会运行一个浮窗。如果要从 LaunchAgent 方式切换到应用方式，先卸载自启：
+
+```bash
+./scripts/uninstall_launch_agent.sh
+```
+
+修改图标绘制脚本后，可重新生成图标：
+
+```bash
+./scripts/generate_app_icon.sh
+```
+
 ## Install
 
 Clone the repo, then run:
