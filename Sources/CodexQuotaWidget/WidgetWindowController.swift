@@ -5,8 +5,16 @@ final class WidgetWindowController: NSObject, NSWindowDelegate {
     var onRequestRefresh: (() -> Void)?
     var onShowTouchBar: (() -> Void)?
     var onOpenTouchBarSettings: (() -> Void)?
-    var onToggleLanguage: (() -> WidgetLanguage)?
     var currentLanguage: (() -> WidgetLanguage)?
+    var onSelectLanguage: ((WidgetLanguage) -> Void)?
+    var supportsLoginItem: (() -> Bool)?
+    var loginItemEnabled: (() -> Bool)?
+    var loginItemNeedsApproval: (() -> Bool)?
+    var onToggleLoginItem: (() -> Bool)?
+    var supportsTouchBar: (() -> Bool)?
+    var lastRefreshText: (() -> String?)?
+    var onOpenLog: (() -> Void)?
+    var onShowAbout: (() -> Void)?
 
     private let stateStore: WidgetStateStore
     private let contentView = WidgetContentView()
@@ -53,6 +61,12 @@ final class WidgetWindowController: NSObject, NSWindowDelegate {
         syncWindowSize(animated: false)
     }
 
+    /// 语言切换后按当前快照重绘文案，并重新计算可能变化的宽度。
+    func refreshLanguage() {
+        contentView.refreshLanguage()
+        syncWindowSize(animated: false)
+    }
+
     func windowDidMove(_ notification: Notification) {
         let frame = window.frame
         stateStore.save(WidgetState(originX: frame.origin.x, originY: frame.origin.y))
@@ -86,11 +100,35 @@ final class WidgetWindowController: NSObject, NSWindowDelegate {
         contentView.onOpenTouchBarSettings = { [weak self] in
             self?.onOpenTouchBarSettings?()
         }
-        contentView.onToggleLanguage = { [weak self] in
-            self?.onToggleLanguage?() ?? .english
-        }
         contentView.currentLanguage = { [weak self] in
             self?.currentLanguage?() ?? .english
+        }
+        contentView.onSelectLanguage = { [weak self] language in
+            self?.onSelectLanguage?(language)
+        }
+        contentView.supportsLoginItem = { [weak self] in
+            self?.supportsLoginItem?() ?? false
+        }
+        contentView.loginItemEnabled = { [weak self] in
+            self?.loginItemEnabled?() ?? false
+        }
+        contentView.loginItemNeedsApproval = { [weak self] in
+            self?.loginItemNeedsApproval?() ?? false
+        }
+        contentView.onToggleLoginItem = { [weak self] in
+            self?.onToggleLoginItem?() ?? false
+        }
+        contentView.supportsTouchBar = { [weak self] in
+            self?.supportsTouchBar?() ?? false
+        }
+        contentView.lastRefreshText = { [weak self] in
+            self?.lastRefreshText?()
+        }
+        contentView.onOpenLog = { [weak self] in
+            self?.onOpenLog?()
+        }
+        contentView.onShowAbout = { [weak self] in
+            self?.onShowAbout?()
         }
         window.contentView = contentView
 
@@ -174,10 +212,19 @@ private final class WidgetContentView: NSView {
     var onRequestRefresh: (() -> Void)?
     var onShowTouchBar: (() -> Void)?
     var onOpenTouchBarSettings: (() -> Void)?
-    var onToggleLanguage: (() -> WidgetLanguage)?
+    var onSelectLanguage: ((WidgetLanguage) -> Void)?
     var currentLanguage: (() -> WidgetLanguage)?
+    var supportsLoginItem: (() -> Bool)?
+    var loginItemEnabled: (() -> Bool)?
+    var loginItemNeedsApproval: (() -> Bool)?
+    var onToggleLoginItem: (() -> Bool)?
+    var supportsTouchBar: (() -> Bool)?
+    var lastRefreshText: (() -> String?)?
+    var onOpenLog: (() -> Void)?
+    var onShowAbout: (() -> Void)?
     private var mouseDownWindowOrigin: NSPoint?
     private var suppressNextMouseUp = false
+    private var lastSnapshot: QuotaSnapshot?
 
     private let summaryStack = NSStackView()
     private let primarySummaryView = SummaryQuotaView(title: "5h")
@@ -212,7 +259,15 @@ private final class WidgetContentView: NSView {
     }
 
     func render(snapshot: QuotaSnapshot?) {
+        lastSnapshot = snapshot
         layer?.backgroundColor = WidgetColors.backgroundColor.cgColor
+
+        let language = currentLanguage?() ?? .english
+        let sourceLabel = language.text("Source", "数据来源")
+        let planLabelTitle = language.text("Plan", "套餐")
+        let resetTitle = language.text("Reset", "重置")
+        let notProvided = language.text("not provided by current log", "当前日志未提供")
+        let waiting = language.text("waiting for Codex quota data", "等 Codex 写入额度数据")
 
         if let snapshot {
             let windows = normalizedWindows(from: snapshot)
@@ -227,8 +282,11 @@ private final class WidgetContentView: NSView {
                 color: WidgetColors.color(for: fiveHour?.remainingPercent)
             )
             primarySummaryView.toolTip = fiveHour.map {
-                "5h: 剩余 \(Int($0.remainingPercent.rounded()))%"
-            } ?? "5h: 当前日志未提供"
+                language.text(
+                    "5h: \(Int($0.remainingPercent.rounded()))% remaining",
+                    "5h: 剩余 \(Int($0.remainingPercent.rounded()))%"
+                )
+            } ?? "5h: \(notProvided)"
 
             secondarySummaryView.render(
                 label: "7d",
@@ -236,46 +294,64 @@ private final class WidgetContentView: NSView {
                 color: WidgetColors.color(for: sevenDay?.remainingPercent)
             )
             secondarySummaryView.toolTip = sevenDay.map {
-                "7d: 剩余 \(Int($0.remainingPercent.rounded()))%"
-            } ?? "7d: 当前日志未提供"
+                language.text(
+                    "7d: \(Int($0.remainingPercent.rounded()))% remaining",
+                    "7d: 剩余 \(Int($0.remainingPercent.rounded()))%"
+                )
+            } ?? "7d: \(notProvided)"
 
             if let fiveHour {
-                fiveHourLabel.stringValue = "5h: 剩余 \(Int(fiveHour.remainingPercent.rounded()))% · 已用 \(Int(fiveHour.usedPercent.rounded()))%"
+                fiveHourLabel.stringValue = language.text(
+                    "5h: \(Int(fiveHour.remainingPercent.rounded()))% left · \(Int(fiveHour.usedPercent.rounded()))% used",
+                    "5h: 剩余 \(Int(fiveHour.remainingPercent.rounded()))% · 已用 \(Int(fiveHour.usedPercent.rounded()))%"
+                )
             } else {
-                fiveHourLabel.stringValue = "5h: 当前日志未提供"
+                fiveHourLabel.stringValue = "5h: \(notProvided)"
             }
             fiveHourLabel.isHidden = fiveHour == nil
 
             if let sevenDay {
-                sevenDayLabel.stringValue = "7d: 剩余 \(Int(sevenDay.remainingPercent.rounded()))% · 已用 \(Int(sevenDay.usedPercent.rounded()))%"
+                sevenDayLabel.stringValue = language.text(
+                    "7d: \(Int(sevenDay.remainingPercent.rounded()))% left · \(Int(sevenDay.usedPercent.rounded()))% used",
+                    "7d: 剩余 \(Int(sevenDay.remainingPercent.rounded()))% · 已用 \(Int(sevenDay.usedPercent.rounded()))%"
+                )
             } else {
-                sevenDayLabel.stringValue = "7d: 当前日志未提供"
+                sevenDayLabel.stringValue = "7d: \(notProvided)"
             }
             sevenDayLabel.isHidden = sevenDay == nil
 
             let resetParts = [
-                fiveHour.map { "5h \(WidgetFormatter.timeUntilReset($0.resetsAt))" },
-                sevenDay.map { "7d \(WidgetFormatter.timeUntilReset($0.resetsAt))" },
+                fiveHour.map { "5h \(WidgetFormatter.timeUntilReset($0.resetsAt, language: language))" },
+                sevenDay.map { "7d \(WidgetFormatter.timeUntilReset($0.resetsAt, language: language))" },
             ].compactMap { $0 }
-            resetLabel.stringValue = "重置: \(resetParts.isEmpty ? "--" : resetParts.joined(separator: " · "))"
-            let age = WidgetFormatter.relativeAge(snapshot.eventTimestamp)
-            freshnessLabel.stringValue = "数据来源: \(WidgetFormatter.compactSourceName(snapshot.sourceFileName)) · \(age)"
-            freshnessLabel.toolTip = "数据来源: \(snapshot.sourceFileName) · \(age)"
-            planLabel.stringValue = "套餐: \(snapshot.planType ?? "unknown")"
+            resetLabel.stringValue = "\(resetTitle): \(resetParts.isEmpty ? "--" : resetParts.joined(separator: " · "))"
+
+            let age = WidgetFormatter.relativeAge(snapshot.eventTimestamp, language: language)
+            let compactSource = WidgetFormatter.compactSourceName(snapshot.sourceFileName, language: language)
+            freshnessLabel.stringValue = "\(sourceLabel): \(compactSource) · \(age)"
+            freshnessLabel.toolTip = "\(sourceLabel): \(snapshot.sourceFileName) · \(age)"
+            planLabel.stringValue = "\(planLabelTitle): \(snapshot.planType ?? language.text("unknown", "未知"))"
         } else {
-            primarySummaryView.isHidden = true
+            primarySummaryView.isHidden = false
             secondarySummaryView.isHidden = false
             primarySummaryView.render(label: "5h", remainingPercent: nil, color: WidgetColors.mutedColor)
             secondarySummaryView.render(label: "7d", remainingPercent: nil, color: WidgetColors.mutedColor)
+            primarySummaryView.toolTip = "5h: \(waiting)"
+            secondarySummaryView.toolTip = "7d: \(waiting)"
             fiveHourLabel.isHidden = true
             sevenDayLabel.isHidden = false
-            fiveHourLabel.stringValue = "5h: 等 Codex 写入额度数据"
-            sevenDayLabel.stringValue = "7d: 等 Codex 写入额度数据"
-            resetLabel.stringValue = "重置: --"
-            freshnessLabel.stringValue = "数据来源: 暂无"
+            fiveHourLabel.stringValue = "5h: \(waiting)"
+            sevenDayLabel.stringValue = "7d: \(waiting)"
+            resetLabel.stringValue = "\(resetTitle): --"
+            freshnessLabel.stringValue = "\(sourceLabel): \(language.text("none", "暂无"))"
             freshnessLabel.toolTip = nil
-            planLabel.stringValue = "套餐: --"
+            planLabel.stringValue = "\(planLabelTitle): --"
         }
+    }
+
+    /// 语言切换后按最后一次快照重绘，避免等下一次刷新才更新文案。
+    func refreshLanguage() {
+        render(snapshot: lastSnapshot)
     }
 
     func setExpanded(_ expanded: Bool) {
@@ -391,18 +467,25 @@ private final class WidgetContentView: NSView {
 
     private func showContextMenu(with event: NSEvent) {
         let menu = NSMenu()
+        let language = currentLanguage?() ?? .english
         let expanded = !detailStack.isHidden
 
         let toggleItem = NSMenuItem(
-            title: expanded ? "收起详情" : "展开详情",
+            title: expanded
+                ? language.text("Collapse Details", "收起详情")
+                : language.text("Expand Details", "展开详情"),
             action: #selector(handleContextToggle),
             keyEquivalent: ""
         )
         toggleItem.target = self
         menu.addItem(toggleItem)
 
+        var refreshTitle = language.text("Refresh Now", "立即刷新")
+        if let lastRefresh = lastRefreshText?() {
+            refreshTitle += language.text(" (last \(lastRefresh))", "（上次 \(lastRefresh)）")
+        }
         let refreshItem = NSMenuItem(
-            title: "立即更新",
+            title: refreshTitle,
             action: #selector(handleContextRefresh),
             keyEquivalent: ""
         )
@@ -410,30 +493,80 @@ private final class WidgetContentView: NSView {
         menu.addItem(refreshItem)
         menu.addItem(.separator())
 
-        let touchBarItem = NSMenuItem(
-            title: "显示 Touch Bar",
-            action: #selector(handleContextShowTouchBar),
-            keyEquivalent: ""
-        )
-        touchBarItem.target = self
-        menu.addItem(touchBarItem)
+        if supportsTouchBar?() ?? false {
+            let touchBarItem = NSMenuItem(
+                title: language.text("Show in Touch Bar", "显示 Touch Bar"),
+                action: #selector(handleContextShowTouchBar),
+                keyEquivalent: ""
+            )
+            touchBarItem.target = self
+            menu.addItem(touchBarItem)
 
-        let touchBarSettingsItem = NSMenuItem(
-            title: "打开 Touch Bar 设置...",
-            action: #selector(handleContextOpenTouchBarSettings),
-            keyEquivalent: ""
-        )
-        touchBarSettingsItem.target = self
-        menu.addItem(touchBarSettingsItem)
+            let touchBarSettingsItem = NSMenuItem(
+                title: language.text("Open Touch Bar Settings…", "打开 Touch Bar 设置…"),
+                action: #selector(handleContextOpenTouchBarSettings),
+                keyEquivalent: ""
+            )
+            touchBarSettingsItem.target = self
+            menu.addItem(touchBarSettingsItem)
+            menu.addItem(.separator())
+        }
+
+        let languageItem = NSMenuItem(title: language.text("Language", "界面语言"), action: nil, keyEquivalent: "")
+        let languageMenu = NSMenu()
+        for option in [WidgetLanguage.english, .chinese] {
+            let optionItem = NSMenuItem(
+                title: option.displayName,
+                action: #selector(handleContextSelectLanguage(_:)),
+                keyEquivalent: ""
+            )
+            optionItem.target = self
+            optionItem.representedObject = option.rawValue
+            optionItem.state = option == language ? .on : .off
+            languageMenu.addItem(optionItem)
+        }
+        languageItem.submenu = languageMenu
+        menu.addItem(languageItem)
         menu.addItem(.separator())
 
-        let languageItem = NSMenuItem(
-            title: currentLanguage?().menuTitle ?? WidgetLanguage.english.menuTitle,
-            action: #selector(handleContextToggleLanguage),
+        if supportsLoginItem?() ?? false {
+            let needsApproval = loginItemNeedsApproval?() ?? false
+            let loginItem = NSMenuItem(
+                title: needsApproval
+                    ? language.text("Launch at Login (Allow in System Settings)", "开机自启（需在系统设置允许）")
+                    : language.text("Launch at Login", "开机自启"),
+                action: #selector(handleContextToggleLoginItem),
+                keyEquivalent: ""
+            )
+            loginItem.target = self
+            loginItem.state = (loginItemEnabled?() ?? false) ? .on : .off
+            menu.addItem(loginItem)
+        }
+
+        let openLogItem = NSMenuItem(
+            title: language.text("Open Log", "打开日志"),
+            action: #selector(handleContextOpenLog),
             keyEquivalent: ""
         )
-        languageItem.target = self
-        menu.addItem(languageItem)
+        openLogItem.target = self
+        menu.addItem(openLogItem)
+
+        let aboutItem = NSMenuItem(
+            title: language.text("About Codex Quota Widget", "关于 Codex Quota Widget"),
+            action: #selector(handleContextShowAbout),
+            keyEquivalent: ""
+        )
+        aboutItem.target = self
+        menu.addItem(aboutItem)
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(
+            title: language.text("Quit Codex Quota Widget", "退出 Codex Quota Widget"),
+            action: #selector(handleContextQuit),
+            keyEquivalent: ""
+        )
+        quitItem.target = self
+        menu.addItem(quitItem)
 
         NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
@@ -459,8 +592,34 @@ private final class WidgetContentView: NSView {
     }
 
     @objc
-    private func handleContextToggleLanguage() {
-        _ = onToggleLanguage?()
+    private func handleContextSelectLanguage(_ sender: NSMenuItem) {
+        guard
+            let rawValue = sender.representedObject as? String,
+            let language = WidgetLanguage(rawValue: rawValue)
+        else {
+            return
+        }
+        onSelectLanguage?(language)
+    }
+
+    @objc
+    private func handleContextToggleLoginItem() {
+        _ = onToggleLoginItem?()
+    }
+
+    @objc
+    private func handleContextOpenLog() {
+        onOpenLog?()
+    }
+
+    @objc
+    private func handleContextShowAbout() {
+        onShowAbout?()
+    }
+
+    @objc
+    private func handleContextQuit() {
+        NSApp.terminate(nil)
     }
 
     private func normalizedWindows(from snapshot: QuotaSnapshot) -> (fiveHour: WindowQuota?, sevenDay: WindowQuota?) {
@@ -561,10 +720,10 @@ private final class DotView: NSView {
 }
 
 private enum WidgetFormatter {
-    static func timeUntilReset(_ date: Date?) -> String {
+    static func timeUntilReset(_ date: Date?, language: WidgetLanguage) -> String {
         guard let date else { return "--" }
         let delta = Int(date.timeIntervalSinceNow)
-        guard delta > 0 else { return "已重置" }
+        guard delta > 0 else { return language.text("reset", "已重置") }
 
         let hours = delta / 3600
         let minutes = (delta % 3600) / 60
@@ -578,31 +737,31 @@ private enum WidgetFormatter {
         return "\(minutes)m"
     }
 
-    static func relativeAge(_ date: Date?) -> String {
-        guard let date else { return "未知" }
+    static func relativeAge(_ date: Date?, language: WidgetLanguage) -> String {
+        guard let date else { return language.text("unknown", "未知") }
         let delta = max(0, Int(-date.timeIntervalSinceNow))
         if delta < 60 {
-            return "\(delta)s 前"
+            return language.text("\(delta)s ago", "\(delta)s 前")
         }
         let minutes = delta / 60
         if minutes < 60 {
-            return "\(minutes)m 前"
+            return language.text("\(minutes)m ago", "\(minutes)m 前")
         }
         let hours = minutes / 60
         if hours < 24 {
-            return "\(hours)h 前"
+            return language.text("\(hours)h ago", "\(hours)h 前")
         }
-        return "\(hours / 24)d 前"
+        return language.text("\(hours / 24)d ago", "\(hours / 24)d 前")
     }
 
     /// 日志文件名形如 rollout-2026-10-21T19-40-18-<uuid>.jsonl，压缩成 "日志 10-21 19:40" 避免详情行被截断。
-    static func compactSourceName(_ name: String) -> String {
+    static func compactSourceName(_ name: String, language: WidgetLanguage) -> String {
         guard name.hasSuffix(".jsonl") else { return name }
         let parts = name.split(separator: "-")
         guard parts.count >= 6, parts[0] == "rollout" else { return name }
         guard let separatorIndex = parts[3].firstIndex(of: "T") else { return name }
         let date = "\(parts[2])-\(parts[3][..<separatorIndex])"
         let hour = parts[3][parts[3].index(after: separatorIndex)...]
-        return "日志 \(date) \(hour):\(parts[4])"
+        return language.text("Log \(date) \(hour):\(parts[4])", "日志 \(date) \(hour):\(parts[4])")
     }
 }

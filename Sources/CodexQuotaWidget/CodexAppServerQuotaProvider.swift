@@ -15,9 +15,11 @@ final class CodexAppServerQuotaProvider {
     private var outputPipe: Pipe?
     private var errorPipe: Pipe?
     private var outputBuffer = ""
+    private var errorBuffer = ""
     private var pendingResponses: [Int: PendingResponse] = [:]
     private var nextRequestID = 1
     private var initialized = false
+    private var retryAfter = Date.distantPast
 
     init(codexURL: URL? = nil) {
         self.codexURL = codexURL ?? Self.discoverCodexURL()
@@ -25,7 +27,11 @@ final class CodexAppServerQuotaProvider {
 
     func latestSnapshot(timeout: TimeInterval = 3) -> QuotaSnapshot? {
         queue.sync {
+            guard Date() >= retryAfter else {
+                return nil
+            }
             guard startIfNeeded() else {
+                retryAfter = Date().addingTimeInterval(30)
                 return nil
             }
 
@@ -85,13 +91,22 @@ final class CodexAppServerQuotaProvider {
 
         process.executableURL = codexURL
         process.arguments = ["app-server", "--listen", "stdio://"]
+        process.environment = Self.childEnvironment()
         process.standardInput = inputPipe
         process.standardOutput = outputPipe
         process.standardError = errorPipe
-        process.terminationHandler = { [weak self] _ in
-            self?.lock.lock()
-            self?.initialized = false
-            self?.lock.unlock()
+        process.terminationHandler = { [weak self] terminated in
+            guard let self else { return }
+            self.lock.lock()
+            self.initialized = false
+            let stderrTail = self.errorBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.lock.unlock()
+
+            let reason = terminated.terminationReason == .uncaughtSignal
+                ? "signal \(terminated.terminationStatus)"
+                : "exit \(terminated.terminationStatus)"
+            let detail = stderrTail.isEmpty ? "" : " stderr=\(String(stderrTail.suffix(500)))"
+            widgetLog("app-server terminated reason=\(reason)\(detail)")
         }
 
         outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -101,15 +116,25 @@ final class CodexAppServerQuotaProvider {
         }
 
         // Drain stderr so app-server warnings never block the child process.
-        errorPipe.fileHandleForReading.readabilityHandler = { handle in
-            _ = handle.availableData
+        errorPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            guard let self else { return }
+            self.lock.lock()
+            self.errorBuffer.append(text)
+            if self.errorBuffer.count > 2000 {
+                self.errorBuffer = String(self.errorBuffer.suffix(2000))
+            }
+            self.lock.unlock()
         }
 
         do {
             try process.run()
         } catch {
+            widgetLog("app-server failed to start: \(error.localizedDescription)")
             return false
         }
+        widgetLog("app-server started url=\(codexURL.path)")
 
         self.process = process
         self.inputPipe = inputPipe
@@ -165,7 +190,20 @@ final class CodexAppServerQuotaProvider {
         }
 
         data.append(0x0A)
-        inputPipe.fileHandleForWriting.write(data)
+        guard process?.isRunning == true else {
+            removePendingResponse(requestID)
+            return nil
+        }
+
+        do {
+            try inputPipe.fileHandleForWriting.write(contentsOf: data)
+        } catch {
+            widgetLog("app-server write failed: \(error.localizedDescription)")
+            retryAfter = Date().addingTimeInterval(10)
+            removePendingResponse(requestID)
+            stopLocked()
+            return nil
+        }
 
         let waitResult = pending.semaphore.wait(timeout: .now() + timeout)
         lock.lock()
@@ -224,14 +262,23 @@ final class CodexAppServerQuotaProvider {
 
         guard
             let rateLimits = codexRateLimits ?? fallbackRateLimits,
-            (rateLimits["limitId"] as? String) == "codex",
-            let primaryPayload = rateLimits["primary"] as? [String: Any],
-            let primary = parseWindow(primaryPayload)
+            (rateLimits["limitId"] as? String) == "codex"
         else {
             return nil
         }
 
-        let secondary = (rateLimits["secondary"] as? [String: Any]).flatMap(parseWindow(_:))
+        // 已过重置时间的窗口不再展示，剩余窗口顺位提升，避免 5h 重置后整条快照不可用。
+        let windows = ["primary", "secondary"]
+            .compactMap { rateLimits[$0] as? [String: Any] }
+            .compactMap(parseWindow(_:))
+            .filter { window in
+                guard let resetsAt = window.resetsAt else { return true }
+                return resetsAt > Date()
+            }
+        guard let primary = windows.first else {
+            return nil
+        }
+        let secondary = windows.dropFirst().first { $0.label != primary.label }
 
         return QuotaSnapshot(
             sourceFileName: "Codex app-server",
@@ -283,6 +330,29 @@ final class CodexAppServerQuotaProvider {
         }
     }
 
+    /// 从访达启动时 PATH 只有系统目录，Homebrew 的 codex 是 Node 脚本，
+    /// 必须把 node 所在目录补进子进程环境，否则子进程会立刻退出。
+    private static func childEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let requiredEntries = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "\(home)/.local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+        ]
+
+        var entries = (environment["PATH"] ?? "").split(separator: ":").map(String.init)
+        for entry in requiredEntries where !entries.contains(entry) {
+            entries.append(entry)
+        }
+        environment["PATH"] = entries.joined(separator: ":")
+        return environment
+    }
+
     private static func discoverCodexURL() -> URL {
         let fileManager = FileManager.default
         for candidate in codexURLCandidates() where fileManager.isExecutableFile(atPath: candidate.path) {
@@ -313,6 +383,14 @@ final class CodexAppServerQuotaProvider {
                 )
             }
         }
+
+        // 只装了 CLI 版 codex 时（Homebrew / npm），从 Finder 启动的应用拿不到 PATH，需要显式补上常见安装位置。
+        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
+        candidates.append(contentsOf: [
+            URL(fileURLWithPath: "/opt/homebrew/bin/codex"),
+            URL(fileURLWithPath: "/usr/local/bin/codex"),
+            homeDirectory.appendingPathComponent(".local/bin/codex"),
+        ])
 
         return candidates
     }

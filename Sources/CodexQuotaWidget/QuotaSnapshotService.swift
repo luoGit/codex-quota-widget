@@ -176,18 +176,26 @@ final class QuotaSnapshotService {
             let secondary = (rateLimits["secondary"] as? [String: Any]).flatMap(parseWindow(_:))
             let timestamp = parseTimestamp(payload["timestamp"] as? String)
 
+            // 已过重置时间的窗口不再展示，剩余窗口顺位提升，避免 5h 重置后整条快照不可用。
+            let activeWindows = [primary, secondary]
+                .compactMap { $0 }
+                .filter { window in
+                    guard let resetsAt = window.resetsAt else { return true }
+                    return resetsAt > Date()
+                }
+            guard let activePrimary = activeWindows.first else {
+                continue
+            }
+            let activeSecondary = activeWindows.dropFirst().first { $0.label != activePrimary.label }
+
             let snapshot = QuotaSnapshot(
                 sourceFileName: fileURL.lastPathComponent,
                 eventTimestamp: timestamp,
                 detectedAt: Date(),
                 planType: rateLimits["plan_type"] as? String,
-                primary: primary,
-                secondary: secondary
+                primary: activePrimary,
+                secondary: activeSecondary
             )
-
-            if let resetsAt = snapshot.primary.resetsAt, resetsAt <= Date() {
-                continue
-            }
 
             let candidate = SnapshotCandidate(
                 snapshot: snapshot,

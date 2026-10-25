@@ -26,22 +26,22 @@ enum WidgetLanguage: String, Codable {
     case english
     case chinese
 
-    var toggled: WidgetLanguage {
+    var isChinese: Bool {
+        self == .chinese
+    }
+
+    /// 显示在语言子菜单里的选项名，两种界面语言下都保持自身写法。
+    var displayName: String {
         switch self {
         case .english:
-            return .chinese
+            return "English"
         case .chinese:
-            return .english
+            return "中文"
         }
     }
 
-    var menuTitle: String {
-        switch self {
-        case .english:
-            return "Language: English"
-        case .chinese:
-            return "Language: 中文"
-        }
+    func text(_ english: String, _ chinese: String) -> String {
+        isChinese ? chinese : english
     }
 }
 
@@ -60,4 +60,9 @@ enum RefreshCadence {
             return 2
         }
     }
+}
+
+enum WidgetNotifications {
+    /// 第二个实例启动时广播，让已运行的实例把浮窗唤到前面。
+    static let showWidget = Notification.Name("com.wendy.codex-quota-widget.show-widget")
 }

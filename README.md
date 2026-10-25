@@ -40,11 +40,13 @@ Codex 的剩余额度通常藏得比较深，需要点进本地模式里的额�
 - Reads quota from Codex's local `app-server` first, then falls back to session logs.
 - Shows the real `codex` quota bucket and avoids the misleading `codex_bengalfox` bucket.
 - Keeps newer app-server snapshots from being overwritten by older session-log fallback data.
-- Auto-discovers Codex's bundled `codex` binary in either `Codex.app` or `ChatGPT.app`.
+- Auto-discovers the `codex` binary in `Codex.app`, `ChatGPT.app`, or common CLI locations (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`).
 - Automatically hides quota windows that Codex no longer returns.
 - Optional Touch Bar display for Touch Bar MacBook Pro models.
-- Touch Bar copy can switch between English and Chinese from the capsule context menu.
-- Right-click shortcut to open Keyboard settings when Touch Bar needs `App Controls`.
+- The whole UI (capsule details, context menu, alerts) switches between English and Chinese from the capsule context menu.
+- Touch Bar menu items only appear on Macs that actually have a Touch Bar.
+- Right-click menu: expand details, refresh (with last refresh time), language, launch at login, open log, about, and quit.
+- Launching the app again wakes the running instance instead of starting a second capsule.
 - LaunchAgent support for silent login startup.
 
 ## 功能亮点
@@ -54,11 +56,13 @@ Codex 的剩余额度通常藏得比较深，需要点进本地模式里的额�
 - 优先通过 Codex 本机 `app-server` 读取真实额度，日志解析只作为备用。
 - 只读取 `rateLimitsByLimitId.codex`，避免误读其他额度桶。
 - 避免旧 session log 回退数据覆盖较新的 app-server 额度快照。
-- 自动识别 `Codex.app` 或 `ChatGPT.app` 内置的 `codex` 二进制路径。
+- 自动识别 `Codex.app`、`ChatGPT.app` 内置以及 Homebrew / 本地安装的 `codex` 命令。
 - 自动隐藏 Codex 当前已经不再返回的额度窗口。
 - Touch Bar 是可选增强，适合仍在使用 Touch Bar MacBook Pro 的用户。
-- 右键胶囊可以在 English / 中文 Touch Bar 文案之间切换。
-- 右键胶囊可以快速打开键盘设置，方便把 Touch Bar 切到 `App 控制`。
+- 右键胶囊可以在 English / 中文之间切换整个界面语言：胶囊详情、右键菜单和提示框都会同步切换。
+- 没有 Touch Bar 的 Mac 不会显示 Touch Bar 相关菜单项。
+- 右键菜单包含：展开详情、立即刷新（显示上次刷新时间）、界面语言、开机自启、打开日志、关于和退出。
+- 重复打开应用（Dock、访达、DMG）会唤醒已有实例并显示胶囊，不会出现第二个浮窗。
 - 支持登录后后台自启，打开 Codex 后自动出现。
 
 ## Release Package
@@ -121,6 +125,23 @@ VERSION=1.1.0 ./scripts/package_release.sh
 ./scripts/generate_app_icon.sh
 ```
 
+## Startup and Quit
+
+When you run the app bundle:
+
+- **Launch at login** — right-click the capsule and toggle `Launch at Login`. The app registers itself with `SMAppService`, so macOS shows it under `System Settings -> General -> Login Items`. Disabling it removes the registration again. When macOS requires approval, the menu item shows `Launch at Login (Allow in System Settings)`.
+- **Enabling from a DMG is blocked** — drag the app into `/Applications` first; the menu explains this instead of registering a copy that lives in `/Volumes`.
+- **Legacy LaunchAgent** — if `~/Library/LaunchAgents/com.wendy.codex-quota-widget.plist` still exists, the first enable asks to remove it, so the two startup mechanisms do not fight each other.
+- **Approval required** — if macOS reports the login item needs approval, the menu opens Login Items settings for you.
+- **Refresh** — `Refresh Now` shows the time of the last successful refresh and forces a fresh quota read.
+- **Language** — the `Language` submenu switches the whole interface between English and 中文, including capsule details, menus, and alerts.
+- **Quit** — `Quit Codex Quota Widget` in the context menu terminates the app. Reopening it from Finder, Dock, or Spotlight wakes the running instance and shows the capsule, so a second process never starts.
+- **Silent start** — the login-started app shows nothing until Codex is running, matching the LaunchAgent behavior. Opening the app yourself always brings the capsule back; if Codex isn't running it shows placeholder quotas and stays visible until Codex starts or you quit.
+- **Reopening while Codex is closed** — the capsule no longer flashes and disappears: it stays on screen with `--` values instead of looking like the app failed to open.
+- **Diagnostics** — launch, quit, wake requests, and quota-source changes are appended to `~/.codex-quota-widget/widget.log`; `Open Log` opens it in the default app.
+- **About** — `About Codex Quota Widget` shows version, build, and the current macOS version.
+- **Duplicate launch** — only one instance runs. Starting a copy from the DMG or an unzipped folder shows which instance is already running and wakes its capsule; reopening right after quitting briefly waits for the old process to release the lock instead of exiting silently.
+
 ## Install
 
 Clone the repo, then run:
@@ -163,13 +184,30 @@ To uninstall:
 - 打开 Codex 后，桌面胶囊和 Touch Bar 会自动出现。
 - 关闭 Codex 后，它们会自动隐藏。
 
-如果 Touch Bar 被系统关闭按钮隐藏，可以右键桌面胶囊，选择 `显示 Touch Bar` 重新显示。
+如果 Touch Bar 被系统关闭按钮隐藏，可以右键桌面胶囊，选择 `显示 Touch Bar` 重新显示。没有 Touch Bar 的 Mac 不会出现这两个菜单项。
 
-如果想切换 Touch Bar 文案语言，可以右键胶囊，选择 `Language: English` 或 `Language: 中文`。
+如果想切换界面语言，可以右键胶囊，打开 `界面语言` 子菜单选择 `English` 或 `中文`。
 
-如果 Touch Bar 一直不显示，请检查 macOS 设置：`系统设置` -> `键盘` -> `触控栏设置` -> `触控栏显示`，需要选择 `App 控制`。也可以右键桌面胶囊，选择 `打开 Touch Bar 设置...` 快速跳到键盘设置页。
+如果 Touch Bar 一直不显示，请检查 macOS 设置：`系统设置` -> `键盘` -> `触控栏设置` -> `触控栏显示`，需要选择 `App 控制`。也可以右键桌面胶囊，选择 `打开 Touch Bar 设置…` 快速跳到键盘设置页。
 
 没有 Touch Bar 的 Mac 会继续使用桌面悬浮胶囊，不需要二次开发。
+
+## 启动与退出
+
+应用包的启动与退出行为：
+
+- **开机自启**：右键胶囊勾选 `开机自启`，应用会通过 `SMAppService` 注册登录项，可在 `系统设置 -> 通用 -> 登录项` 中看到；取消勾选会同时注销。macOS 要求批准时，菜单项会显示为 `开机自启（需在系统设置允许）`。
+- **不要从 DMG 直接开启自启**：菜单会提示先把应用拖进 `/Applications`，避免注册一个位于 `/Volumes` 的临时路径。
+- **旧 LaunchAgent 迁移**：如果还存在 `~/Library/LaunchAgents/com.wendy.codex-quota-widget.plist`，首次开启自启会询问是否移除，避免两套自启同时运行。
+- **需要系统确认时**：macOS 提示登录项需要批准时，菜单会直接打开登录项设置。
+- **立即刷新**：菜单项会带上上次刷新时间，点击后强制重新读取一次额度。
+- **界面语言**：`界面语言` 子菜单可在 English / 中文之间切换，胶囊详情、右键菜单和提示框会一起切换。
+- **退出**：右键菜单选择 `退出 Codex Quota Widget` 即可结束进程；再次从访达、Dock 或聚焦打开时，会唤醒已有实例并显示胶囊，不会启动第二个进程。
+- **静默启动**：登录自启后不会主动显示界面，等到 Codex 运行才出现，与原 LaunchAgent 行为一致。主动从访达或 Dock 打开应用时则一定会显示胶囊；如果 Codex 没运行，胶囊会显示 `--` 占位并保持可见，直到 Codex 启动或手动退出。
+- **Codex 未运行时打开**：浮窗不再闪一下又消失，而是稳定显示占位额度，避免看起来像应用打不开。
+- **启动诊断**：启动、退出、唤醒和额度来源变化都会记录到 `~/.codex-quota-widget/widget.log`；菜单里的 `打开日志` 可直接用默认应用打开。
+- **关于**：`关于 Codex Quota Widget` 会显示版本、构建号和当前 macOS 版本。
+- **重复启动**：同一时间只允许一个实例。从磁盘映像或解压目录再开一份时，会提示当前实例所在路径并唤醒已有浮窗；刚退出后立刻重新打开会短暂等待旧进程释放锁，不会静默退出。
 
 ## Touch Bar Setup
 
@@ -177,9 +215,9 @@ If the Touch Bar view does not appear, check macOS settings first:
 
 - Open `System Settings` -> `Keyboard` -> `Touch Bar Settings`.
 - Set `Touch Bar shows` to `App Controls`.
-- You can also right-click the desktop capsule and choose `打开 Touch Bar 设置...` to open Keyboard settings quickly.
+- You can also right-click the desktop capsule and choose `Open Touch Bar Settings…` to open Keyboard settings quickly.
 
-This is a macOS-level setting. The widget can show Touch Bar content, but it cannot force macOS to switch away from Control Strip-only modes.
+This is a macOS-level setting. The widget can show Touch Bar content, but it cannot force macOS to switch away from Control Strip-only modes. On Macs without a Touch Bar, the widget hides these menu items entirely.
 
 ## Manual Run
 

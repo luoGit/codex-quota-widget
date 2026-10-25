@@ -16,7 +16,8 @@ swiftc \
   -module-name CodexQuotaWidget \
   -o "$TARGET_BIN" \
   "$ROOT_DIR"/Sources/CodexQuotaWidget/*.swift \
-  -framework AppKit
+  -framework AppKit \
+  -framework IOKit
 
 chmod +x "$TARGET_BIN"
 

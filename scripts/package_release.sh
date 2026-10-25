@@ -28,7 +28,8 @@ swiftc \
   -module-name "$EXECUTABLE_NAME" \
   -o "$CONTENTS_DIR/MacOS/$EXECUTABLE_NAME" \
   "$ROOT_DIR"/Sources/CodexQuotaWidget/*.swift \
-  -framework AppKit
+  -framework AppKit \
+  -framework IOKit
 chmod +x "$CONTENTS_DIR/MacOS/$EXECUTABLE_NAME"
 
 cp "$ROOT_DIR/assets/AppIcon.icns" "$CONTENTS_DIR/Resources/AppIcon.icns"
